@@ -8,6 +8,8 @@ README's Versioning section.
 
 ## [Unreleased]
 
+## [12.4.2.0] - 2026-11-20
+
 ### Added
 - Fully static qpdf 12.4.2 executables for Linux x86_64 and aarch64, built
   against musl with zlib, libjpeg-turbo and OpenSSL linked in. The build
@@ -20,3 +22,4 @@ README's Versioning section.
   `QPDF_BINARY_CACHE_DIR`.
 - `QpdfBinary::UnsupportedPlatformError`, `MissingBinaryError` and
   `ExtractionError`, all subclasses of `QpdfBinary::Error`.
+
