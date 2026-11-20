@@ -1,0 +1,17 @@
+/.bundle/
+/doc/
+/.yardoc/
+/pkg/
+/tmp/
+
+# Test coverage
+/coverage/
+
+# Build products of bin/build-binaries. They are packaged into the gem but
+# kept out of git; CI rebuilds them from the pinned qpdf source.
+/libexec/
+
+# devenv/direnv local state
+/.devenv/
+/.devenv.flake.nix
+/.direnv/

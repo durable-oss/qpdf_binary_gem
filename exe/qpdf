@@ -1,0 +1,18 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Runs the static qpdf binary bundled with the qpdf-binary gem, passing every
+# argument through unchanged.
+
+require_relative "../lib/qpdf_binary"
+
+begin
+  binary = QpdfBinary.path
+rescue QpdfBinary::Error => e
+  warn "qpdf-binary: #{e.message}"
+  exit 1
+end
+
+# The [path, argv0] form never goes through a shell, even when ARGV is empty,
+# and lets qpdf report itself as "qpdf" in its messages.
+exec([binary, "qpdf"], *ARGV)

@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+#
+# Configure the GitHub repository to Durable Programming conventions.
+# Idempotent: safe to re-run whenever settings drift.
+#
+# Requires the gh CLI, authenticated with `repo` and `admin:repo_hook` scope.
+#
+# Usage:
+#   bin/setup-github              apply the settings
+#   bin/setup-github --dry-run    print what would change, touch nothing
+#
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+REPO="durable-oss/qpdf_binary_gem"
+DESCRIPTION="Statically linked qpdf executables for Linux x86_64 and aarch64, packaged as the qpdf-binary Ruby gem"
+HOMEPAGE="https://rubygems.org/gems/qpdf-binary"
+TOPICS="ruby,ruby-gem,qpdf,pdf,static-binary,musl,linux,rails"
+
+dry_run=0
+[ "${1:-}" = "--dry-run" ] && dry_run=1
+
+command -v gh >/dev/null 2>&1 || { echo "gh CLI is not installed" >&2; exit 1; }
+gh auth status >/dev/null 2>&1 || { echo "gh is not authenticated; run: gh auth login" >&2; exit 1; }
+
+apply() {
+  local label="$1"; shift
+  if [ "$dry_run" -eq 1 ]; then
+    printf '  [dry-run] %s\n' "$label"
+    printf '            %s\n' "$*"
+  else
+    printf '  %s... ' "$label"
+    if "$@" >/dev/null 2>&1; then
+      echo "ok"
+    else
+      echo "FAILED"
+      echo "    command: $*" >&2
+      return 1
+    fi
+  fi
+}
+
+echo "==> Configuring $REPO"
+
+apply "description, homepage, topics" \
+  gh repo edit "$REPO" \
+    --description "$DESCRIPTION" \
+    --homepage "$HOMEPAGE" \
+    --add-topic "$TOPICS"
+
+apply "merge strategy (squash only, delete branch on merge)" \
+  gh repo edit "$REPO" \
+    --enable-squash-merge \
+    --enable-merge-commit=false \
+    --enable-rebase-merge=false \
+    --delete-branch-on-merge
+
+apply "features (issues on, wiki and projects off)" \
+  gh repo edit "$REPO" \
+    --enable-issues \
+    --enable-wiki=false \
+    --enable-projects=false
+
+echo
+echo "==> Branch protection on main"
+
+# gh repo edit does not cover branch protection; use the API directly.
+#
+# enforce_admins is false on purpose: bin/release pushes the version-bump
+# commit straight to main, and required status checks would otherwise reject
+# a freshly-created commit that CI has not seen yet.
+#
+# The required contexts are the lint job, the per-architecture static builds,
+# and the package job that tests the built gem. The `test` job is a Ruby
+# version matrix, so its checks are named "test (3.1)" and so on, not "test";
+# listing it here would never be satisfied.
+protection_payload='{
+  "required_status_checks": {
+    "strict": true,
+    "contexts": ["lint", "binaries (x86_64)", "binaries (aarch64)", "package"]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null,
+  "allow_force_pushes": false,
+  "allow_deletions": false,
+  "required_linear_history": true,
+  "required_conversation_resolution": true
+}'
+
+if [ "$dry_run" -eq 1 ]; then
+  echo "  [dry-run] PUT /repos/$REPO/branches/main/protection"
+  echo "$protection_payload" | sed 's/^/            /'
+else
+  printf '  applying... '
+  if printf '%s' "$protection_payload" \
+    | gh api --method PUT "repos/$REPO/branches/main/protection" --input - >/dev/null 2>&1; then
+    echo "ok"
+  else
+    echo "FAILED"
+    echo "    Branch protection needs admin rights on the repo." >&2
+    echo "    On a free plan it also requires the repo to be public (this one is)." >&2
+  fi
+fi
+
+echo
+echo "==> Current settings"
+gh api "repos/$REPO" --jq '
+  "  description: \(.description // "(none)")",
+  "  homepage:    \(.homepage // "(none)")",
+  "  topics:      \(.topics | join(", "))",
+  "  merges:      squash=\(.allow_squash_merge) merge=\(.allow_merge_commit) rebase=\(.allow_rebase_merge)",
+  "  delete branch on merge: \(.delete_branch_on_merge)"
+'
+
+echo
+echo "==> Remaining manual step: RubyGems trusted publishing"
+cat <<'NOTE'
+  The release workflow publishes via OIDC, so no API key is stored here.
+  It only works once the gem is linked on rubygems.org. One time, do:
+
+    1. Sign in at https://rubygems.org
+    2. For a NEW gem (not yet pushed, gem name qpdf-binary), go to:
+         https://rubygems.org/profile/oidc/pending_trusted_publishers/new
+       For an EXISTING gem, go to the gem's page -> Trusted Publishers -> Create
+    3. Enter:
+         Repository owner:  durable-oss
+         Repository name:   qpdf_binary_gem
+         Workflow filename: release.yml
+         Environment:       (leave blank)
+
+  Until that exists, `bin/release` will tag and push fine but the publish
+  step of the release workflow will fail with an authentication error.
+NOTE

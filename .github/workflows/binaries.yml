@@ -1,0 +1,59 @@
+name: Static binaries
+
+# Builds the static qpdf executables, one native runner per architecture, and
+# uploads them as the `qpdf-linux-<arch>` artifacts. Shared by CI and Release
+# so both package exactly the same build.
+
+on:
+  workflow_call:
+
+jobs:
+  binaries:
+    name: binaries (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # bin/build-binaries reads the qpdf version and checksum from
+      # lib/qpdf_binary/version.rb; it needs a Ruby, not the bundle.
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+
+      - name: Build qpdf
+        run: bin/build-binaries ${{ matrix.arch }}
+
+      # The build exports the license texts of everything it links. A diff
+      # here means a dependency's license changed and licenses/ needs a commit.
+      - name: Check the committed license texts are current
+        run: git diff --exit-code -- licenses/
+
+      # distroless/static has no libc and no dynamic loader at all, so qpdf
+      # only runs here if it really is static.
+      - name: Run qpdf in an image with no libc
+        run: |
+          mkdir -p "$RUNNER_TEMP/qpdf"
+          gunzip -c "libexec/qpdf-linux-${{ matrix.arch }}.gz" > "$RUNNER_TEMP/qpdf/qpdf"
+          chmod 755 "$RUNNER_TEMP/qpdf/qpdf"
+          docker run --rm -v "$RUNNER_TEMP/qpdf:/opt/qpdf:ro" \
+            --entrypoint /opt/qpdf/qpdf gcr.io/distroless/static-debian12 --version
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: qpdf-linux-${{ matrix.arch }}
+          path: |
+            libexec/qpdf-linux-${{ matrix.arch }}.gz
+            libexec/qpdf-linux-${{ matrix.arch }}.buildinfo
+          if-no-files-found: error

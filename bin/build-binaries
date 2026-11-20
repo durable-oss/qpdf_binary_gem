@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+#
+# Build the static qpdf binaries with Docker and package them into libexec/.
+#
+# Usage:
+#   bin/build-binaries                    every supported architecture
+#   bin/build-binaries x86_64             just one
+#   bin/build-binaries x86_64 aarch64     an explicit list
+#
+# Building for an architecture other than the host's needs QEMU binfmt
+# support (docker run --privileged --rm tonistiigi/binfmt --install arm64)
+# and is slow; CI builds each architecture on a native runner instead.
+#
+# For each architecture this writes:
+#   libexec/qpdf-linux-<arch>.gz          the gzipped static executable
+#   libexec/qpdf-linux-<arch>.buildinfo   Alpine packages present in the build
+# and refreshes licenses/ with the license texts of everything linked in.
+#
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+command -v docker >/dev/null 2>&1 || { echo "docker is not installed" >&2; exit 1; }
+
+read -r qpdf_version qpdf_sha256 < <(
+  ruby -Ilib -rqpdf_binary/version \
+    -e 'puts [QpdfBinary::QPDF_VERSION, QpdfBinary::QPDF_SOURCE_SHA256].join(" ")'
+)
+
+if [ "$#" -eq 0 ]; then
+  set -- x86_64 aarch64
+fi
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+
+mkdir -p libexec licenses
+
+for arch in "$@"; do
+  case "$arch" in
+    x86_64)  docker_platform="linux/amd64" ;;
+    aarch64) docker_platform="linux/arm64" ;;
+    *) echo "unsupported architecture: $arch (expected x86_64 or aarch64)" >&2; exit 1 ;;
+  esac
+
+  echo "==> Building qpdf $qpdf_version for linux-$arch ($docker_platform)"
+  out="$workdir/$arch"
+  docker build builder \
+    --platform "$docker_platform" \
+    --target export \
+    --build-arg "QPDF_VERSION=$qpdf_version" \
+    --build-arg "QPDF_SOURCE_SHA256=$qpdf_sha256" \
+    --output "type=local,dest=$out"
+
+  # -n leaves the name and timestamp out of the gzip header, so rebuilding
+  # an identical binary produces an identical archive.
+  gzip -9 -n -c "$out/qpdf" > "libexec/qpdf-linux-$arch.gz"
+  cp "$out/BUILDINFO" "libexec/qpdf-linux-$arch.buildinfo"
+  cp "$out"/licenses/* licenses/
+
+  echo "    libexec/qpdf-linux-$arch.gz ($(du -h "libexec/qpdf-linux-$arch.gz" | cut -f1))"
+done
+
+echo "==> Done"

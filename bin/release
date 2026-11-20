@@ -1,0 +1,163 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# Cut a release: bump the version, promote the CHANGELOG's Unreleased
+# section, commit, tag, and push. Pushing the tag triggers the
+# release workflow, which builds the static binaries on native runners and
+# publishes the gem to RubyGems via trusted publishing.
+#
+# The gem version is QPDF_VERSION plus a packaging revision. The script
+# works out the next one:
+#
+#   QPDF_VERSION changed since the last release   12.4.2.3 -> 12.5.0.0
+#   QPDF_VERSION unchanged (a repackaging)        12.4.2.0 -> 12.4.2.1
+#
+# Usage:
+#   bin/release              release the next version
+#   bin/release 12.4.2.7     set an explicit version (must extend QPDF_VERSION)
+#   bin/release --dry-run    show what would change, touch nothing
+
+require "date"
+require "open3"
+
+ROOT = File.expand_path("..", __dir__)
+VERSION_FILE = File.join(ROOT, "lib", "qpdf_binary", "version.rb")
+CHANGELOG_FILE = File.join(ROOT, "CHANGELOG.md")
+
+def abort_with(message)
+  warn "error: #{message}"
+  exit 1
+end
+
+def run(*command)
+  output, status = Open3.capture2e(*command, chdir: ROOT)
+  abort_with("`#{command.join(" ")}` failed:\n#{output}") unless status.success?
+  output.strip
+end
+
+def usage
+  warn <<~TEXT
+    usage: bin/release [X.Y.Z.N] [--dry-run]
+
+      (no version)   QPDF_VERSION.0 after a qpdf bump, otherwise the next packaging revision
+      X.Y.Z.N        set an explicit version; X.Y.Z must equal QPDF_VERSION
+      --dry-run      print the planned changes without writing anything
+  TEXT
+  exit 1
+end
+
+args = ARGV.dup
+dry_run = !args.delete("--dry-run").nil?
+explicit = args.shift
+usage unless args.empty?
+
+version_source = File.read(VERSION_FILE)
+current = version_source[/\bVERSION\s*=\s*"([^"]+)"/, 1]
+qpdf_version = version_source[/QPDF_VERSION\s*=\s*"([^"]+)"/, 1]
+abort_with("could not read VERSION and QPDF_VERSION from #{VERSION_FILE}") unless current && qpdf_version
+
+# The first release of a version already written in version.rb (the very
+# first release, or one bumped by hand) ships that version as it stands.
+current_released = !run("git", "tag", "--list", "v#{current}").empty?
+
+new_version =
+  if explicit
+    usage unless explicit.match?(/\A\d+\.\d+\.\d+\.\d+\z/)
+    explicit
+  elsif !current_released && current.start_with?("#{qpdf_version}.")
+    current
+  elsif current.start_with?("#{qpdf_version}.")
+    "#{qpdf_version}.#{current.split(".").last.to_i + 1}"
+  else
+    "#{qpdf_version}.0"
+  end
+
+unless new_version.start_with?("#{qpdf_version}.")
+  abort_with("#{new_version} does not extend QPDF_VERSION #{qpdf_version}")
+end
+if current_released && Gem::Version.new(new_version) <= Gem::Version.new(current)
+  abort_with("#{new_version} is not newer than the released #{current}")
+end
+
+tag = "v#{new_version}"
+
+puts "Releasing #{current} -> #{new_version} (tag #{tag})"
+puts "(dry run: nothing will be written)" if dry_run
+
+# --- Preflight ---------------------------------------------------------
+
+branch = run("git", "rev-parse", "--abbrev-ref", "HEAD")
+abort_with("releases must be cut from main (currently on #{branch})") unless branch == "main" || dry_run
+
+abort_with("working tree is dirty; commit or stash first") unless run("git", "status", "--porcelain").empty?
+
+existing_tags = run("git", "tag", "--list", tag)
+abort_with("tag #{tag} already exists") unless existing_tags.empty?
+
+run("git", "fetch", "origin", "--tags")
+local_head = run("git", "rev-parse", "HEAD")
+remote_head = run("git", "rev-parse", "origin/main")
+unless local_head == remote_head || dry_run
+  abort_with("local main (#{local_head[0, 7]}) differs from origin/main (#{remote_head[0, 7]}); pull or push first")
+end
+
+changelog = File.read(CHANGELOG_FILE)
+unreleased_body = changelog[/^## \[Unreleased\]\s*\n(.*?)(?=^## \[|\z)/m, 1].to_s.strip
+abort_with("CHANGELOG has no content under ## [Unreleased]") if unreleased_body.empty?
+
+puts "\n--- Checks ---"
+unless dry_run
+  puts "Running RuboCop..."
+  run("bundle", "exec", "rubocop")
+  puts "Running tests..."
+  run("bundle", "exec", "rake", "test")
+  puts "All checks passed."
+end
+
+# --- Rewrite files -----------------------------------------------------
+
+new_version_file = version_source.sub(/^(\s*)VERSION\s*=\s*"[^"]+"/) { %(#{Regexp.last_match(1)}VERSION = "#{new_version}") }
+
+released_heading = "## [#{new_version}] - #{Date.today.iso8601}"
+new_changelog = changelog.sub(
+  /^## \[Unreleased\]\s*\n.*?(?=^## \[|\z)/m,
+  "## [Unreleased]\n\n#{released_heading}\n\n#{unreleased_body}\n\n"
+)
+
+if dry_run
+  puts "\n--- Would write #{VERSION_FILE} ---"
+  puts new_version_file
+  puts "--- Would write CHANGELOG entry ---"
+  puts released_heading
+  puts unreleased_body
+  puts "\n--- Would run ---"
+  puts "  git commit -am \"Release #{new_version}\""
+  puts "  git tag -a #{tag} -m \"Release #{new_version}\""
+  puts "  git push origin main #{tag}"
+  exit 0
+end
+
+File.write(VERSION_FILE, new_version_file)
+File.write(CHANGELOG_FILE, new_changelog)
+
+# Keep Gemfile.lock's recorded version in step with the bump.
+run("bundle", "lock")
+
+run("git", "add", VERSION_FILE, CHANGELOG_FILE, File.join(ROOT, "Gemfile.lock"))
+run("git", "commit", "-m", "Release #{new_version}")
+run("git", "tag", "-a", tag, "-m", "Release #{new_version}")
+
+puts "\nCommitted and tagged #{tag}."
+puts "Pushing to origin..."
+run("git", "push", "origin", "main")
+run("git", "push", "origin", tag)
+
+puts <<~DONE
+
+  Released #{new_version}.
+
+  The release workflow is now building the static binaries and publishing
+  the gem to RubyGems.
+  Watch it with:  gh run watch
+  Or:             gh run list --workflow=release.yml
+DONE
