@@ -61,8 +61,14 @@ GEM
     unicode-emoji (4.3.0)
 
 PLATFORMS
-  ruby
-  x86_64-linux
+  aarch64-linux-gnu
+  aarch64-linux-musl
+  arm-linux-gnu
+  arm-linux-musl
+  arm64-darwin
+  x86_64-darwin
+  x86_64-linux-gnu
+  x86_64-linux-musl
 
 DEPENDENCIES
   bundler (>= 2.0)
@@ -75,34 +81,5 @@ DEPENDENCIES
   rubocop-rake (~> 0.6)
   simplecov (~> 0.22)
 
-CHECKSUMS
-  ansi (1.6.0)
-  ast (2.4.3)
-  builder (3.3.0)
-  docile (1.4.1)
-  json (2.19.9)
-  language_server-protocol (3.17.0.6)
-  lint_roller (1.1.0)
-  minitest (5.27.0)
-  minitest-reporters (1.8.0)
-  parallel (2.3.0)
-  parser (3.3.13.0)
-  prism (1.9.0)
-  qpdf-binary (12.4.2.0)
-  racc (1.8.1)
-  rainbow (3.1.1)
-  rake (13.4.2)
-  regexp_parser (2.13.1)
-  rubocop (1.87.0)
-  rubocop-ast (1.50.0)
-  rubocop-minitest (0.40.0)
-  rubocop-rake (0.7.1)
-  ruby-progressbar (1.13.0)
-  simplecov (0.22.0)
-  simplecov-html (0.13.2)
-  simplecov_json_formatter (0.1.4)
-  unicode-display_width (3.3.0)
-  unicode-emoji (4.3.0)
-
 BUNDLED WITH
-  4.0.0
+   2.6.9
